@@ -10,8 +10,8 @@ anyhow = "1"
 env_logger = "0.11"
 fuser = "0.14"
 log = "0.4"
+md5 = "0.7"
 nix = { version = "0.28", features = ["fs", "mount", "user"] }
 once_cell = "1.19"
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
-uuid = { version = "1.7", features = ["v4", "fast-rng"]}

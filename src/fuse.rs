@@ -10,7 +10,6 @@ use nix::libc::*;
 use nix::sys::stat::stat;
 use nix::unistd::{getgid, getuid};
 use once_cell::unsync::Lazy;
-use uuid::Uuid;
 
 use crate::configs::{PatchedFile, PatchType};
 use crate::dirs::{ensure_dir, MOUNT_POINT};
@@ -89,11 +88,11 @@ impl FuseEntry {
 
 impl From<PatchedFile> for FuseEntry {
     fn from(file: PatchedFile) -> Self {
-        let uuid = Uuid::new_v4().to_string();
         let filename = file.path.file_name().unwrap().to_str().unwrap();
+        let hash = md5::compute(&filename);
         
         FuseEntry::new(
-            format!("{uuid}-{filename}"),
+            format!("{filename}_{hash:x}"),
             generate_attr(&file),
             Some(file)
         )
@@ -203,7 +202,7 @@ impl FileRegion {
     fn s_size(&self) -> usize {
         self.s_end - self.s_begin
     }
-    
+
     fn d_size(&self) -> usize {
         self.d_end - self.d_begin
     }
@@ -211,12 +210,12 @@ impl FileRegion {
 
 fn do_read(file: &PatchedFile, begin: usize, size: usize, max_index: usize) -> Result<Vec<u8>> {
     let end = cmp::min(begin + size, max_index);
-    
+
     let data = &file.content;
-    
+
     let s_size = fs::metadata(&file.path)?.size() as usize;
     let d_size = data.len();
-    
+
     let region = match file.patch_type {
         PatchType::Prepend => FileRegion {
             s_begin: cmp::max(begin, d_size) - d_size,
@@ -240,17 +239,17 @@ fn do_read(file: &PatchedFile, begin: usize, size: usize, max_index: usize) -> R
 
     let mut src_buffer: Vec<u8> = vec![];
     let mut data_buffer: Vec<u8> = vec![];
-    
+
     if region.s_size() != 0 {
         let fp = File::open(&file.path)?;
         src_buffer.resize(region.s_size(), 0);
         fp.read_exact_at(&mut src_buffer, region.s_begin as _)?;
     }
-    
+
     if region.d_size() != 0 {
         data_buffer.extend(&data[region.d_begin..region.d_end]);
     }
-    
+
     Ok(match file.patch_type {
         PatchType::Prepend => {
             data_buffer.extend(src_buffer);
@@ -267,7 +266,7 @@ fn do_read(file: &PatchedFile, begin: usize, size: usize, max_index: usize) -> R
 
 pub fn mount(files: Vec<PatchedFile>) {
     let mfs = MirrorFileSystem::new(files);
-    let options = &[MountOption::RO];
+    let options = &[MountOption::AutoUnmount, MountOption::AllowOther, MountOption::RO];
     
     ensure_dir(MOUNT_POINT.as_path());
     fuser::mount2(mfs, MOUNT_POINT.as_path(), options).expect("failed to mount mirror");
