@@ -4,7 +4,7 @@ use std::fs;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
 use anyhow::{bail, Result};
-use log::debug;
+use tokio::runtime::Runtime;
 
 use crate::cli::Operation;
 use crate::dirs::ROOT_DIR;
@@ -16,6 +16,7 @@ mod mount;
 mod cli;
 mod hash;
 mod daemon;
+mod pipeback;
 
 fn check_permissions() -> Result<()> {
     let metadata = fs::metadata("/proc/self/exe")?;
@@ -31,32 +32,25 @@ fn check_permissions() -> Result<()> {
     Ok(())
 }
 
-fn check_ns() -> Result<()> {
-    let ns = fs::read_link("/proc/thread-self/ns/mnt")?;
-    debug!("current namespace: {ns:?}");
-    Ok(())
-}
-
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
     env_logger::init();
-    
+
     check_permissions()?;
-    
-    dirs::ensure_dir(ROOT_DIR.as_path())?;
+    dirs::ensure_dir(&*ROOT_DIR)?;
 
     let args = cli::parse_args();
+    let runtime = Runtime::new()?;
 
     match args.op {
         None => {
-            mount::unshare()?;
-            cli::run_self().arg("daemon").status().await?;
+            runtime.block_on(daemon::main())?;
         }
         Some(Operation::MountFuse) => {
+            mount::unshare()?;
             fuse::mount(configs::parse())?;
-        }
-        Some(Operation::Daemon) => {
-            daemon::main().await?;
+        },
+        Some(Operation::PipeBack) => {
+
         }
     }
 

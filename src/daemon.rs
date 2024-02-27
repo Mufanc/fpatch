@@ -9,6 +9,7 @@ use anyhow::Result;
 use log::{debug, info};
 use rustix::fs::UnmountFlags;
 use rustix::mount;
+use rustix::thread::Pid;
 use tokio::{select, task, time};
 use tokio::signal::unix;
 use tokio::signal::unix::SignalKind;
@@ -21,6 +22,8 @@ use crate::dirs::{FileNameString, MOUNT_POINT};
 use crate::hash::Hash;
 
 pub async fn main() -> Result<()> {
+    crate::mount::cleanup()?;
+
     loop {
         run_fuse().await?;
 
@@ -38,6 +41,9 @@ async fn run_fuse() -> Result<()> {
         .stdout(Stdio::piped())
         .spawn()?;
 
+    let fuse_pid = fuse.id().unwrap();
+    debug!("fuse server: {fuse_pid}");
+
     let (tx, rx) = oneshot::channel::<()>();
 
     let do_mount: JoinHandle<Result<()>> = task::spawn(async move {
@@ -46,6 +52,9 @@ async fn run_fuse() -> Result<()> {
 
             handler.recv().await;
             debug!("fuse mounted");
+
+            // time::sleep(Duration::from_secs(1)).await;
+            crate::mount::take_fuse(Pid::from_raw(fuse_pid as _).unwrap()).await?;
             mount_proxies(&files_1)?;
 
             rx.await?;
@@ -65,13 +74,15 @@ async fn run_fuse() -> Result<()> {
         r = run_daemon => debug!("run_daemon finished: {r:?}")
     }
 
+    crate::mount::cleanup()?;
+
     Ok(())
 }
 
 fn mount_proxies(patches: &[PatchedFile]) -> Result<()> {
     let mut entries: HashMap<String, PathBuf> = HashMap::new();
 
-    for entry in fs::read_dir(MOUNT_POINT.as_path())? {
+    for entry in fs::read_dir(&*MOUNT_POINT)? {
         let path = entry.unwrap().path();
 
         let filename = path.name_string();

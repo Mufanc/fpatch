@@ -33,7 +33,7 @@ pub struct PatchedFile {
 }
 
 pub fn parse() -> Vec<PatchedFile> {
-    let configs_str = fs::read_to_string(CONFIG_FILE.as_path()).expect("failed to read config file");
+    let configs_str = fs::read_to_string(&*CONFIG_FILE).expect("failed to read config file");
     let configs: PatchConfigsModel = toml::from_str(&configs_str).expect("failed to parse configs");
 
     let mut patches = vec![];

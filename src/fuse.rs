@@ -12,14 +12,14 @@ use once_cell::unsync::Lazy;
 use rustix::{fs as rfs, process};
 use rustix::process::Signal;
 
-use crate::{check_ns, dirs};
+use crate::dirs;
 use crate::configs::{PatchedFile, PatchType};
 use crate::dirs::{FileNameString, MOUNT_POINT};
 use crate::hash::Hash;
 
 const TTL: Duration = Duration::from_secs(1);
 
-const ROOT_INO: u64 = 1;  // fuse root
+pub const ROOT_INO: u64 = 1;  // fuse root
 const ROOT_ATTR: Lazy<FileAttr> = Lazy::new(|| FileAttr {
     ino: ROOT_INO,
     size: 0,
@@ -41,7 +41,8 @@ const ROOT_ATTR: Lazy<FileAttr> = Lazy::new(|| FileAttr {
 
 fn generate_attr(file: &PatchedFile) -> FileAttr {
     let path = &file.path;
-    let src = rfs::stat(path).unwrap();
+    let src = rfs::stat(path)
+        .unwrap_or_else(|err| panic!("cannot stat {:?}: {}", path, err));
 
     FileAttr {
         ino: src.st_ino,
@@ -266,16 +267,17 @@ fn do_read(file: &PatchedFile, begin: usize, size: usize, max_index: usize) -> R
 
 pub fn mount(files: Vec<PatchedFile>) -> Result<()> {
     let mfs = MirrorFileSystem::new(files);
-    let options = &[MountOption::AutoUnmount, MountOption::AllowOther, MountOption::RO];
+    let options = &[
+        MountOption::RO, MountOption::AllowOther,  
+        MountOption::FSName(env!("CARGO_CRATE_NAME").to_owned())
+    ];
     
-    dirs::ensure_dir(MOUNT_POINT.as_path())?;
+    dirs::ensure_dir(&*MOUNT_POINT)?;
 
-    let session = fuser::spawn_mount2(mfs, MOUNT_POINT.as_path(), options)?;
+    let session = fuser::spawn_mount2(mfs, &*MOUNT_POINT, options)?;
     
     debug!("fuse session: {session:?}");
-    
-    check_ns()?;
-    
+
     process::kill_process(process::getppid().unwrap(), Signal::Usr1)?;
 
     match session.guard.join() {

@@ -10,7 +10,7 @@ pub struct Args {
 #[derive(Parser, Debug)]
 pub enum Operation {
     MountFuse,
-    Daemon
+    PipeBack
 }
 
 pub fn parse_args() -> Args {
