@@ -8,7 +8,7 @@ use anyhow::Result;
 use log::{debug, info};
 use rustix::fs::UnmountFlags;
 use rustix::mount;
-use tokio::{select, task, time};
+use tokio::{select, signal, task, time};
 use tokio::signal::unix;
 use tokio::signal::unix::SignalKind;
 use tokio::sync::oneshot;
@@ -23,13 +23,26 @@ use crate::hash::Hash;
 
 pub async fn main() -> Result<()> {
     crate::mount::cleanup()?;
+    
+    let daemon_loop: JoinHandle<Result<()>> = task::spawn(async {
+        try {
+            loop {
+                run_fuse().await?;
 
-    loop {
-        run_fuse().await?;
-
-        info!("fuse server exited, restarting in 5 seconds...");
-        time::sleep(Duration::from_secs(5)).await;
+                info!("fuse server exited, restarting in 5 seconds...");
+                time::sleep(Duration::from_secs(5)).await;
+            }
+        }
+    });
+    
+    select! {
+        r = daemon_loop => debug!("daemon_loop finished: {r:?}"),
+        r = signal::ctrl_c() => debug!("Ctrl-C: {r:?}")
     }
+
+    crate::mount::cleanup()?;
+    
+    Ok(())
 }
 
 async fn run_fuse() -> Result<()> {
