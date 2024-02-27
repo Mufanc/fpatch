@@ -2,17 +2,18 @@ use std::{cmp, fs};
 use std::ffi::OsStr;
 use std::fs::File;
 use std::os::unix::fs::{FileExt, MetadataExt};
-use std::process::Command;
 use std::time::{Duration, UNIX_EPOCH};
 
 use anyhow::{bail, Result};
 use fuser::{FileAttr, Filesystem, FileType, MountOption, ReplyAttr, ReplyData, ReplyDirectory, ReplyEntry, ReplyOpen, Request};
 use libc::*;
+use log::debug;
 use once_cell::unsync::Lazy;
 use rustix::{fs as rfs, process};
+use rustix::process::Signal;
 
+use crate::{check_ns, dirs};
 use crate::configs::{PatchedFile, PatchType};
-use crate::dirs;
 use crate::dirs::{FileNameString, MOUNT_POINT};
 use crate::hash::Hash;
 
@@ -88,11 +89,10 @@ impl FuseEntry {
 
 impl From<PatchedFile> for FuseEntry {
     fn from(file: PatchedFile) -> Self {
-        let filename = &file.path.name_string();
-        let hash = filename.hash();
+        let filepath = &file.path;
 
         FuseEntry::new(
-            format!("{hash}:{filename}"),
+            format!("{}:{}", filepath.hash(), filepath.name_string()),
             generate_attr(&file),
             Some(file)
         )
@@ -271,10 +271,12 @@ pub fn mount(files: Vec<PatchedFile>) -> Result<()> {
     dirs::ensure_dir(MOUNT_POINT.as_path())?;
 
     let session = fuser::spawn_mount2(mfs, MOUNT_POINT.as_path(), options)?;
-
-    Command::new("/proc/self/exe")
-        .arg("mount")
-        .status()?;
+    
+    debug!("fuse session: {session:?}");
+    
+    check_ns()?;
+    
+    process::kill_process(process::getppid().unwrap(), Signal::Usr1)?;
 
     match session.guard.join() {
         Err(e) => bail!("fuse mount crashed: {e:?}"),

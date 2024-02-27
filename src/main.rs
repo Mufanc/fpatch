@@ -1,15 +1,13 @@
-use std::collections::HashMap;
+#![feature(try_blocks)]
+
 use std::fs;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
-use std::path::PathBuf;
 
 use anyhow::{bail, Result};
-use rustix::path::Arg;
+use log::debug;
 
 use crate::cli::Operation;
-use crate::dirs::{FileNameString, MOUNT_POINT, ROOT_DIR};
-use crate::hash::Hash;
-use crate::mount::bind_mount;
+use crate::dirs::ROOT_DIR;
 
 mod fuse;
 mod configs;
@@ -17,6 +15,7 @@ mod dirs;
 mod mount;
 mod cli;
 mod hash;
+mod daemon;
 
 fn check_permissions() -> Result<()> {
     let metadata = fs::metadata("/proc/self/exe")?;
@@ -32,52 +31,33 @@ fn check_permissions() -> Result<()> {
     Ok(())
 }
 
-fn main() -> Result<()> {
+fn check_ns() -> Result<()> {
+    let ns = fs::read_link("/proc/thread-self/ns/mnt")?;
+    debug!("current namespace: {ns:?}");
+    Ok(())
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    env_logger::init();
+    
     check_permissions()?;
+    
+    dirs::ensure_dir(ROOT_DIR.as_path())?;
 
     let args = cli::parse_args();
 
     match args.op {
         None => {
-            run_server()?
+            mount::unshare()?;
+            cli::run_self().arg("daemon").status().await?;
         }
-        Some(Operation::Mount) => {
-            mount_proxies()?;
+        Some(Operation::MountFuse) => {
+            fuse::mount(configs::parse())?;
         }
-    }
-
-    Ok(())
-}
-
-fn run_server() -> Result<()> {
-    env_logger::init();
-    dirs::ensure_dir(ROOT_DIR.as_path())?;
-
-    mount::unshare()?;
-    fuse::mount(configs::parse())?;
-
-    Ok(())
-}
-
-fn mount_proxies() -> Result<()> {
-    let mut entries: HashMap<String, PathBuf> = HashMap::new();
-
-    for entry in fs::read_dir(MOUNT_POINT.as_path())? {
-        let path = entry.unwrap().path();
-
-        let filename = path.name_string();
-        let hash = filename.split(':').next().unwrap().to_string();
-
-        entries.insert(hash, path);
-    }
-
-    for file in configs::parse() {
-        let hash = file.path.name_string().hash();
-        
-        let source = &entries[&hash];
-        let target = &file.path;
-        
-        bind_mount(source, target)?;
+        Some(Operation::Daemon) => {
+            daemon::main().await?;
+        }
     }
 
     Ok(())
