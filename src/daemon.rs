@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
-use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -9,7 +8,6 @@ use anyhow::Result;
 use log::{debug, info};
 use rustix::fs::UnmountFlags;
 use rustix::mount;
-use rustix::thread::Pid;
 use tokio::{select, task, time};
 use tokio::signal::unix;
 use tokio::signal::unix::SignalKind;
@@ -17,8 +15,10 @@ use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
 use crate::{cli, configs};
+use crate::cli::OperationType;
 use crate::configs::PatchedFile;
 use crate::dirs::{FileNameString, MOUNT_POINT};
+use crate::extensions::{Also, ToTokioCommand};
 use crate::hash::Hash;
 
 pub async fn main() -> Result<()> {
@@ -36,13 +36,11 @@ async fn run_fuse() -> Result<()> {
     let files_1 = Arc::new(configs::parse());
     let files_2 = files_1.clone();
 
-    let mut fuse = cli::run_self()
-        .arg("mount-fuse")
-        .stdout(Stdio::piped())
+    let mut fuse = cli::run_op(OperationType::MountFuse)
+        .tokio()
         .spawn()?;
-
+    
     let fuse_pid = fuse.id().unwrap();
-    debug!("fuse server: {fuse_pid}");
 
     let (tx, rx) = oneshot::channel::<()>();
 
@@ -50,11 +48,12 @@ async fn run_fuse() -> Result<()> {
         try {
             let mut handler = unix::signal(SignalKind::user_defined1())?;
 
-            handler.recv().await;
-            debug!("fuse mounted");
+            handler.recv().await.also(|_| debug!("fuse mounted"));
 
-            // time::sleep(Duration::from_secs(1)).await;
-            crate::mount::take_fuse(Pid::from_raw(fuse_pid as _).unwrap()).await?;
+            cli::run_op(OperationType::PipeBack)
+                .arg(format!("{}", fuse_pid))
+                .status()?;
+            
             mount_proxies(&files_1)?;
 
             rx.await?;

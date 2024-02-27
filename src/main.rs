@@ -16,6 +16,7 @@ mod mount;
 mod cli;
 mod hash;
 mod daemon;
+mod extensions;
 mod pipeback;
 
 fn check_permissions() -> Result<()> {
@@ -39,18 +40,18 @@ fn main() -> Result<()> {
     dirs::ensure_dir(&*ROOT_DIR)?;
 
     let args = cli::parse_args();
-    let runtime = Runtime::new()?;
 
     match args.op {
         None => {
+            let runtime = Runtime::new()?;
             runtime.block_on(daemon::main())?;
         }
         Some(Operation::MountFuse) => {
             mount::unshare()?;
             fuse::mount(configs::parse())?;
         },
-        Some(Operation::PipeBack) => {
-
+        Some(Operation::PipeBack(args)) => {
+            pipeback::main(args.pid)?;
         }
     }
 

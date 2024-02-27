@@ -274,11 +274,12 @@ pub fn mount(files: Vec<PatchedFile>) -> Result<()> {
     
     dirs::ensure_dir(&*MOUNT_POINT)?;
 
+    let daemon_pid = process::getppid().unwrap();
     let session = fuser::spawn_mount2(mfs, &*MOUNT_POINT, options)?;
     
     debug!("fuse session: {session:?}");
-
-    process::kill_process(process::getppid().unwrap(), Signal::Usr1)?;
+    
+    process::kill_process(daemon_pid, Signal::Usr1)?;
 
     match session.guard.join() {
         Err(e) => bail!("fuse mount crashed: {e:?}"),
