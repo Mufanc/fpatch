@@ -2,17 +2,19 @@ use std::{cmp, fs};
 use std::ffi::OsStr;
 use std::fs::File;
 use std::os::unix::fs::{FileExt, MetadataExt};
+use std::process::Command;
 use std::time::{Duration, UNIX_EPOCH};
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use fuser::{FileAttr, Filesystem, FileType, MountOption, ReplyAttr, ReplyData, ReplyDirectory, ReplyEntry, ReplyOpen, Request};
-use nix::libc::*;
-use nix::sys::stat::stat;
-use nix::unistd::{getgid, getuid};
+use libc::*;
 use once_cell::unsync::Lazy;
+use rustix::{fs as rfs, process};
 
 use crate::configs::{PatchedFile, PatchType};
-use crate::dirs::{ensure_dir, MOUNT_POINT};
+use crate::dirs;
+use crate::dirs::{FileNameString, MOUNT_POINT};
+use crate::hash::Hash;
 
 const TTL: Duration = Duration::from_secs(1);
 
@@ -28,8 +30,8 @@ const ROOT_ATTR: Lazy<FileAttr> = Lazy::new(|| FileAttr {
     kind: FileType::Directory,
     perm: 0o755,
     nlink: 0,
-    uid: getuid().as_raw(),
-    gid: getgid().as_raw(),
+    uid: process::getuid().as_raw(),
+    gid: process::getgid().as_raw(),
     rdev: 0,
     blksize: 0,
     flags: 0,
@@ -38,9 +40,7 @@ const ROOT_ATTR: Lazy<FileAttr> = Lazy::new(|| FileAttr {
 
 fn generate_attr(file: &PatchedFile) -> FileAttr {
     let path = &file.path;
-
-    let filename = path.to_str().unwrap().to_owned();
-    let src = stat(path).unwrap_or_else(|err| panic!("failed to stat file {}: {}", filename, err));
+    let src = rfs::stat(path).unwrap();
 
     FileAttr {
         ino: src.st_ino,
@@ -67,7 +67,7 @@ fn generate_attr(file: &PatchedFile) -> FileAttr {
 }
 
 
-struct FuseEntry {
+pub struct FuseEntry {
     name: String,
     attr: FileAttr,
     src: Option<PatchedFile>
@@ -88,11 +88,11 @@ impl FuseEntry {
 
 impl From<PatchedFile> for FuseEntry {
     fn from(file: PatchedFile) -> Self {
-        let filename = file.path.file_name().unwrap().to_str().unwrap();
-        let hash = md5::compute(&filename);
-        
+        let filename = &file.path.name_string();
+        let hash = filename.hash();
+
         FuseEntry::new(
-            format!("{filename}_{hash:x}"),
+            format!("{hash}:{filename}"),
             generate_attr(&file),
             Some(file)
         )
@@ -264,10 +264,20 @@ fn do_read(file: &PatchedFile, begin: usize, size: usize, max_index: usize) -> R
 }
 
 
-pub fn mount(files: Vec<PatchedFile>) {
+pub fn mount(files: Vec<PatchedFile>) -> Result<()> {
     let mfs = MirrorFileSystem::new(files);
     let options = &[MountOption::AutoUnmount, MountOption::AllowOther, MountOption::RO];
     
-    ensure_dir(MOUNT_POINT.as_path());
-    fuser::mount2(mfs, MOUNT_POINT.as_path(), options).expect("failed to mount mirror");
+    dirs::ensure_dir(MOUNT_POINT.as_path())?;
+
+    let session = fuser::spawn_mount2(mfs, MOUNT_POINT.as_path(), options)?;
+
+    Command::new("/proc/self/exe")
+        .arg("mount")
+        .status()?;
+
+    match session.guard.join() {
+        Err(e) => bail!("fuse mount crashed: {e:?}"),
+        _ => bail!("fuse mount exited unexpectedly")
+    }
 }
