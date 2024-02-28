@@ -4,6 +4,7 @@ use std::fs;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
 use anyhow::{bail, Result};
+use libc::{S_IFREG, S_ISUID, S_IWGRP, S_IWOTH};
 use tokio::runtime::Runtime;
 
 use crate::cli::Operation;
@@ -21,13 +22,22 @@ mod pipeback;
 
 fn check_permissions() -> Result<()> {
     let metadata = fs::metadata("/proc/self/exe")?;
-
-    if metadata.permissions().mode() != 0o104755 {
-        bail!("file permissions incorrect (expected 0o4755)");
+    let mode = metadata.permissions().mode();
+    
+    if mode & S_IFREG == 0 {
+        bail!("incorrect file type");
+    }
+    
+    if mode & S_ISUID == 0 {
+        bail!("fpatch muse be SUID file to run");
+    }
+    
+    if mode & (S_IWGRP | S_IWOTH) != 0 {
+        bail!("incorrect file permission");
     }
 
     if metadata.uid() != 0 {
-        bail!("file owner should be root");
+        bail!("file owner must be root");
     }
 
     Ok(())
