@@ -47,7 +47,7 @@ fn generate_attr(file: &PatchedFile) -> FileAttr {
     FileAttr {
         ino: src.st_ino,
         size: match file.patch_type {
-            PatchType::Replace => src.st_size as _,
+            PatchType::Replace => file.content.len() as _,
             PatchType::Prepend | PatchType::Append => {
                 src.st_size as u64 + file.content.len() as u64
             }
