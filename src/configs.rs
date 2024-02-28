@@ -8,7 +8,8 @@ use crate::dirs::CONFIG_FILE;
 #[derive(Deserialize, Debug)]
 struct PatchModel {
     file: String,
-    content: String
+    content: String,
+    enable: Option<bool>
 }
 
 #[derive(Deserialize, Debug)]
@@ -39,6 +40,10 @@ pub fn parse() -> Vec<PatchedFile> {
     let mut patches = vec![];
     let mut transform = |ty: PatchType, models: Vec<PatchModel>| {
         models.into_iter().for_each(|model| {
+            if let Some(false) = model.enable {
+                return 
+            }
+            
             patches.push(PatchedFile {
                 patch_type: ty,
                 path: PathBuf::from(&model.file),
