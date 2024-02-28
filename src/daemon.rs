@@ -6,18 +6,20 @@ use std::time::Duration;
 
 use anyhow::Result;
 use log::{debug, info};
+use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
 use rustix::fs::UnmountFlags;
 use rustix::mount;
 use tokio::{select, signal, task, time};
+use tokio::runtime::Handle;
 use tokio::signal::unix;
 use tokio::signal::unix::SignalKind;
-use tokio::sync::oneshot;
+use tokio::sync::{oneshot, mpsc};
 use tokio::task::JoinHandle;
 
 use crate::{cli, configs};
 use crate::cli::OperationType;
 use crate::configs::PatchedFile;
-use crate::dirs::{FileNameString, MOUNT_POINT};
+use crate::dirs::{CONFIG_FILE, FileNameString, MOUNT_POINT};
 use crate::extensions::{Also, ToTokioCommand};
 use crate::hash::Hash;
 
@@ -27,7 +29,12 @@ pub async fn main() -> Result<()> {
     let daemon_loop: JoinHandle<Result<()>> = task::spawn(async {
         try {
             loop {
-                run_fuse().await?;
+                select! {
+                    _ = run_fuse() => (),
+                    _ = inotify_wait() => {
+                        info!("config file changed, killing fuse server");
+                    }
+                }
 
                 info!("fuse server exited, restarting in 5 seconds...");
                 time::sleep(Duration::from_secs(5)).await;
@@ -42,6 +49,25 @@ pub async fn main() -> Result<()> {
 
     crate::mount::cleanup()?;
     
+    Ok(())
+}
+
+async fn inotify_wait() -> Result<()> {
+    let handle = Handle::current();
+    let (tx, mut rx) = mpsc::channel(1);
+    
+    let mut monitor = RecommendedWatcher::new(
+        move |ev| {
+            handle.block_on(async {
+                tx.send(ev).await.unwrap();
+            });
+        },
+        Config::default()
+    )?;
+
+    monitor.watch(&*CONFIG_FILE, RecursiveMode::NonRecursive)?;
+    rx.recv().await;
+
     Ok(())
 }
 
@@ -73,7 +99,7 @@ async fn run_fuse() -> Result<()> {
         }
     });
 
-    let run_daemon: JoinHandle<Result<()>> = task::spawn(async move {
+    let join: JoinHandle<Result<()>> = task::spawn(async move {
         try {
             fuse.wait().await?;
             tx.send(()).unwrap_or_else(|_| ());
@@ -83,7 +109,7 @@ async fn run_fuse() -> Result<()> {
 
     select! {
         r = do_mount => debug!("do_mount finished: {r:?}"),
-        r = run_daemon => debug!("run_daemon finished: {r:?}")
+        r = join => debug!("run_daemon finished: {r:?}")
     }
 
     crate::mount::cleanup()?;
